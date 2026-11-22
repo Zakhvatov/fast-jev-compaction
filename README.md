@@ -1,29 +1,62 @@
-# fast-jev-compaction (OpenCode fork)
+# fast-jev-compaction
 
-Fork of [tamaratran/fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction):
-the same verbatim compaction engine, wired into OpenCode's `compaction` hook,
-able to ask Jev through OpenCode itself, through TypeSafe, or through a local
-Jev-compatible model.
+**English** | [Русский](README.ru.md)
 
-[Русская версия](README.ru.md)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Node 18+](https://img.shields.io/badge/node-18%2B-blue.svg)](https://nodejs.org/)
 
-## What it does
+Compaction for OpenCode that never rewrites history. Jev scores every tool call
+and every tool result; the ones the next turn no longer needs are removed, and
+everything kept stays verbatim.
 
-OpenCode compacts a long session by replacing older turns with a model-written
-summary. A summary is lossy: a file path, an exact error, a constraint can
-disappear even when the next turn needs it.
+OpenCode's own `/compact` replaces older turns with a model-written summary, and
+a summary is lossy: a file path, an exact error, a constraint can disappear even
+when the next turn needs it. This plugin does not summarize. It only deletes.
 
-This plugin never rewrites anything. Every tool call and every tool result is
-scored in one Jev request; stale ones are deleted or truncated, and everything
-kept stays verbatim, in order. The hook returns the surviving messages as the
-provider replacement window (`result.native.messages`), so OpenCode replays them
-instead of a summary.
+- **Verbatim.** Kept messages are the original objects, in order. Nothing is
+  paraphrased, no text is rewritten.
+- **Fast.** One decision request per batch, about 0.3 s on the free route, so a
+  compaction does not stall a turn.
+- **Fail-closed.** No answer, no decision: the plugin leaves the result unset and
+  OpenCode writes its usual summary. A failed compaction never makes a session
+  worse than the built-in behaviour.
 
-If Jev fails, answers badly, or removes too little, the hook leaves `result`
-unset and OpenCode writes its own summary. A failed compaction never makes a
-session worse than the built-in behaviour.
+## Measured
 
-## Install in OpenCode
+Eight recorded OpenCode sessions, with 15 probes taken from what the next turn
+actually used (a file it opened, an error line it quoted). A chat model then had
+to quote each probe from the compacted window and from a model-written summary of
+the same history:
+
+| | kept the literal | answered from it |
+| --- | --- | --- |
+| compacted window | 9/15 | 11/15 (73%) |
+| summary baseline | 6/15 | 2/15 (13%) |
+
+The price is visible too: 69% of the text was removed, and 5 of 39 exact literals
+did not survive. The commands that produce these numbers are under
+[Measuring](#measuring-better-or-worse).
+
+## How it works
+
+1. `tool_use` and `tool_result` are paired by id. Calls in the first message and
+   in the newest `preserveRecentMessages` messages are pinned.
+2. The state is the whole conversation, oldest first, with each result replaced by
+   a short note (`ok, 4213 chars (omitted)`) and fitted into `maxStateTokens` in
+   stages; if it still does not fit, compaction throws and the hook falls back.
+3. Two `noul` questions per call: should the call stay, should the result stay
+   verbatim. Requests are batched under `maxRequestTokens` and run concurrently.
+4. `keepResult ≥ threshold` → keep; else `keepCall ≥ threshold` → keep the call
+   and truncate the result to its head; else drop both. User and assistant text
+   is never a candidate.
+
+The hook returns the surviving messages as the provider replacement window
+(`result.native.messages`), so OpenCode replays them instead of a summary.
+
+The engine is usable as a library too: `import { compact } from
+'fast-jev-compaction/lib'` after `npm run build`.
+
+## Install
 
 ```sh
 git clone https://github.com/Zakhvatov/fast-jev-compaction.git \
@@ -75,9 +108,6 @@ Inside OpenCode the default goes through `ctx.experimental.generate.decisions`,
 which signs the request with the provider the user connected. Outside OpenCode
 (the bench) the same model is reached over HTTP with a key from
 `~/.local/share/opencode/auth.json`.
-
-A failed request never costs a session: the plugin leaves the result unset, the
-trial log records the error, and OpenCode writes its own summary.
 
 ## Options
 
@@ -168,21 +198,6 @@ tsx bin/trial.ts
 tsx bin/trial.ts --since 2026-11-20
 ```
 
-## How the decisions work
-
-1. `tool_use` and `tool_result` are paired by id. Calls in the first message and
-   in the newest `preserveRecentMessages` messages are pinned.
-2. The state is the whole conversation, oldest first, with results replaced by a
-   short note (`ok, 4213 chars (omitted)`), fitted into `maxStateTokens` in
-   stages; if it still does not fit, compaction throws and the hook falls back.
-3. Two `noul` questions per call: should the call stay, should the result stay
-   verbatim. Requests are batched under `maxRequestTokens`, run concurrently.
-4. `keepResult ≥ threshold` → keep; else `keepCall ≥ threshold` → keep the call
-   and truncate the result; else drop both. Text messages are never removed.
-
-The engine is still usable as a library: `import { compact } from
-'fast-jev-compaction/lib'` after `npm run build`.
-
 ## Development
 
 ```sh
@@ -202,7 +217,7 @@ compaction contract is tested without OpenCode.
 `npm install` uses `.npmrc` with `legacy-peer-deps` because `@opencode/plugin`
 and the vitest toolchain disagree about a vite peer.
 
-## Upstream
+## Built on
 
 The engine and the original README come from
 [tamaratran/fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction).
